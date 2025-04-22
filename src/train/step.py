@@ -83,7 +83,7 @@ def compute_loss_fn(diff_model: PyTree,
     model = eqx.combine(diff_model, static_model)
     y_pred = jax.vmap(model)(data, keys)
 
-    y = data['y'][:, -1, ...]  # End of time dimension
+    y = data['y']  #if seq2seq else data['y'][:, -1, ...]
     valid_mask = ~jnp.isnan(y)
     masked_y = jnp.where(valid_mask, y, 0)
     masked_y_pred = jnp.where(valid_mask, y_pred, 0)
@@ -135,7 +135,7 @@ def clip_gradients(grads: PyTree, max_norm: float) -> PyTree:
                                  jtu.tree_map(lambda x: jnp.sum(x**2), grads))
     total_norm = jnp.sqrt(total_norm)
     scale = jnp.minimum(max_norm / total_norm, 1.0)
-    return jax.tree_map(lambda g: scale * g, grads)
+    return jtu.tree_map(lambda g: scale * g, grads)
 
 
 @eqx.filter_jit

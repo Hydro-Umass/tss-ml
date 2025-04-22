@@ -61,9 +61,8 @@ def _get_batch_ig(model, batch, target_idx, m_steps):
 
     for feat_group in dynamic_feature_keys:
         # Summing attributions across the sequence length dimension (axis=1)
-        summed_attributions = jnp.nansum(batch_ig_attribs_tree['dynamic'][feat_group],
-                                         axis=1)
-        feat_imp_list.append(summed_attributions)
+        attributions = jnp.nanmean(batch_ig_attribs_tree['dynamic'][feat_group], axis=1)
+        feat_imp_list.append(attributions)
 
     # Concatenate along the feature dimension: -> (batch, total_dynamic_features)
     final_ig_attributions = jnp.concatenate(feat_imp_list, axis=-1)

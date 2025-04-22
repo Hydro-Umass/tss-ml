@@ -30,6 +30,7 @@ class HydroDataset(Dataset):
 
         self.features = self.cfg['features']
         self.target = self.features['target']
+        self.seq2seq = self.cfg.get('seq2seq', False)
 
         self._read_basin_files()
         self.x_s = self._load_attributes()
@@ -313,6 +314,9 @@ class HydroDataset(Dataset):
             # Target data. Shape (batch, sequence, features)
             if not self.inference_mode:
                 batch['y'] = np.moveaxis(ds[self.target].to_array().values, 0, 2)
+
+        if not self.seq2seq:
+            batch['y'] = batch['y'][:, -1, ...]
 
         # # Testing devices
         # for source, col_names in self.features['dynamic'].items():

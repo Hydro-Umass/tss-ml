@@ -9,7 +9,9 @@
 # learning_rate = initial_lr * (decay_rate ** rate_factor)
 reset_lr: True
 
-additional_epochs: 50
+# Only specify one of these...
+additional_epochs: 10
+# total_epochs: 50
 
 # This dict will be directly inserted into the existing config.
 # Only include what you want to change, and not all changes make sense. 

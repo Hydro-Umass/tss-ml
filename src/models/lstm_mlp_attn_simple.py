@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray
 
-from models.lstm import EALSTM
+from models.lstm import EALSTM, LSTM
 from models.transformer import StaticEmbedder, CrossAttnDecoder
 
 
@@ -80,7 +80,30 @@ class StackedMLP(eqx.Module):
         return jax.vmap(mlp_apply)(x_d)
 
 
-class LSTM_MLP_ATTN(eqx.Module):
+class StackedLSTM(LSTM):
+    append_static: bool
+
+    def __init__(self, dynamic_in_size: int, static_in_size: int, hidden_size: int,
+                 dense_size: int, *, dropout: float, key: PRNGKeyArray):
+        self.append_static = static_in_size > 0
+
+        super().__init__(in_size=dynamic_in_size + static_in_size,
+                         hidden_size=hidden_size,
+                         out_size=dense_size,
+                         dropout=dropout,
+                         key=key)
+
+    def __call__(self, x_d: Array, x_s: Array, key: PRNGKeyArray):
+        if self.append_static:
+            x_s_broadcast = jnp.broadcast_to(x_s, (x_d.shape[0], x_s.shape[0]))
+            x = jnp.concatenate([x_d, x_s_broadcast], axis=-1)
+        else:
+            x = x_d
+
+        return super().__call__(x, key)
+
+
+class LSTM_MLP_ATTN_SIMPLE(eqx.Module):
     """Model that uses LSTMs, MLPs, and attention to mix time frequencies.
 
     Attributes
@@ -180,13 +203,12 @@ class LSTM_MLP_ATTN(eqx.Module):
                                      depth=num_layers,
                                      key=var_key)
             else:
-                encoder = EALSTM(dynamic_in_size=var_size,
-                                 static_in_size=static_size,
-                                 hidden_size=hidden_size,
-                                 dense_size=None,
-                                 dropout=dropout,
-                                 return_all=True,
-                                 key=var_key)
+                encoder = StackedLSTM(dynamic_in_size=var_size,
+                                      static_in_size=static_size,
+                                      hidden_size=hidden_size,
+                                      dense_size=None,
+                                      dropout=dropout,
+                                      key=var_key)
             self.encoders[var_name] = encoder
 
         # Cross-attn or Self-attn decoders.
@@ -199,13 +221,12 @@ class LSTM_MLP_ATTN(eqx.Module):
                 self.decoders[var_name] = CrossAttnDecoder(seq_length, hidden_size,
                                                            hidden_size, hidden_size,
                                                            num_layers, num_heads,
-                                                           dropout, entity_aware,
-                                                           var_key)
+                                                           dropout, False, var_key)
         else:
             self.decoders['self'] = CrossAttnDecoder(seq_length, hidden_size,
                                                      hidden_size, hidden_size,
                                                      num_layers, num_heads, dropout,
-                                                     entity_aware, var_key)
+                                                     False, var_key)
 
         self.head = eqx.nn.Linear(in_features=hidden_size * len(self.decoders),
                                   out_features=len(target),

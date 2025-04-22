@@ -17,7 +17,7 @@ while [[ "$#" -gt 0 ]]; do
       config_path="$2"
       shift
       ;;
-    --cpu|--ceewater|--gpu|--gpu-long|--gpupod)
+    --cpu|--ceewater|--gpu|--gpu-short|--gpu-long|--gpupod|--high-vram|--high-vram-dual)
       partition="$1"  
       ;;
     *)
@@ -46,7 +46,7 @@ process_and_submit() {
 
   # If confirmed, submit each job
   for item in "${items[@]}"; do
-    ./run.sh "$partition" "$flag" "$item"
+    ./sbatch/run.sh "$partition" "$flag" "$item"
   done
 }
 

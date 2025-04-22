@@ -229,13 +229,22 @@ def set_model_data_args(cfg: dict, dataset) -> dict[str | Any]:
     cfg['model_args']['target'] = target
 
     model_name = cfg['model'].lower()
-    if model_name in ['flexible_hybrid', 'hybrid', 'lstm_mlp_attn']:
+    if model_name in [
+            'flexible_hybrid', 'hybrid', 'lstm_mlp_attn', 'lstm_mlp_attn_simple',
+            'attn_lstm'
+    ]:
         cfg['model_args']['seq_length'] = cfg['sequence_length']
         cfg['model_args']['dynamic_sizes'] = {
             k: len(v) for k, v in dataset.features['dynamic'].items()
         }
         cfg['model_args']['static_size'] = len(dataset.features['static'])
         cfg['model_args']['time_aware'] = dataset.time_gaps
+
+    elif model_name == 'stacked_lstm':
+        cfg['model_args']['seq2seq'] = dataset.seq2seq
+        cfg['model_args']['dynamic_size'] = len(dataset.features['dynamic']['era5'])
+        cfg['model_args']['static_size'] = len(dataset.features['static'])
+        cfg['model_args'].pop('target')
 
     elif model_name == 'graph_lstm':
         cfg['model_args']['dynamic_size'] = len(dataset.features['dynamic']['era5'])

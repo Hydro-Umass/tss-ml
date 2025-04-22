@@ -142,7 +142,7 @@ class Trainer:
             if cfg.get('early_stopping'):
                 self.early_stopper = EarlyStopper(**cfg['early_stopping'])
             else:
-                None
+                self.early_stopper = None
 
         # Initialize the filterspec. Defaults to training all components.
         self.freeze_components([])
@@ -279,7 +279,7 @@ class Trainer:
         """
         lr = self.lr_schedule(self.epoch)
         self.optim = optax.adam(lr)
-        consecutive_exceptions = 0
+        exceptions = 0
         batch_count = 0
         losses = []
         bad_grads = {'vanishing': {}, 'exploding': {}}
@@ -442,13 +442,12 @@ class Trainer:
             json.dump(state, f, default=float)
 
     @classmethod
-    def load_checkpoint(cls, checkpoint_dir: Path):
+    def load_checkpoint(cls, checkpoint_dir: Path, lazy: bool = False):
         """Loads the trainer state from a checkpoint directory and returns a new Trainer instance."""
 
         # --- Load Config ---
         with open(checkpoint_dir.parent / "config.pkl", 'rb') as f:
             cfg = pickle.load(f)
-        lr_schedule = _create_lr_schedule(cfg)
 
         # --- Load Trainer State (JSON) ---
         with open(checkpoint_dir / "trainer_state.json", 'r') as f:
@@ -464,6 +463,7 @@ class Trainer:
             early_stopper = None
 
         # --- Load Model and Optimizer State ---
+        lr_schedule = _create_lr_schedule(cfg)
         with open(checkpoint_dir / "model_and_opt.eqx", "rb") as f:
             model_args = json.loads(f.readline().decode())
             if 'graph_matrix' in model_args:
@@ -483,24 +483,25 @@ class Trainer:
             serialized_opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
             opt_state = eqx.tree_deserialise_leaves(f, serialized_opt_state)
 
-        # --- Create and Populate New Trainer Instance ---
-        print("Creating new Trainer instance...")
-        # Call cls (Trainer) constructor with loaded/recreated components
-        trainer = cls(cfg=cfg,
-                      log_dir=checkpoint_dir.parent,
-                      checkpoint={
-                          'epoch': epoch,
-                          'losses': losses,
-                          'model': model,
-                          'optim': optim,
-                          'opt_state': opt_state,
-                          'early_stopper': early_stopper
-                      })
+        checkpoint = {
+            'epoch': epoch,
+            'losses': losses,
+            'model': model,
+            'optim': optim,
+            'opt_state': opt_state,
+            'early_stopper': early_stopper
+        }
+        log_dir = checkpoint_dir.parent
 
-        return trainer
+        if lazy:
+            return cfg, log_dir, checkpoint
+        else:
+            # --- Create and Populate New Trainer Instance ---
+            print(f"Creating new Trainer instance from {checkpoint_dir.resolve()}")
+            return cls(cfg=cfg, log_dir=log_dir, checkpoint=checkpoint)
 
     @classmethod
-    def load_last_checkpoint(cls, log_dir: Path):
+    def load_last_checkpoint(cls, log_dir: Path, lazy: bool = False):
         """Finds the directory of the last saved epoch or loads a fresh Trainer from config if no checkpoints exist.
 
 
@@ -522,7 +523,7 @@ class Trainer:
         if epoch_strs:
             last_epoch_idx = np.argmax([int(s) for s in epoch_strs])
             checkpoint_dir = log_dir / f"epoch{epoch_strs[last_epoch_idx]}"
-            return cls.load_checkpoint(checkpoint_dir)
+            return cls.load_checkpoint(checkpoint_dir, lazy)
         else:
             # --- Load Config and create fresh Trainer instance ---
             config_path = log_dir / "config.pkl"

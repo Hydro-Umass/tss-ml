@@ -25,10 +25,15 @@ class BaseLSTM(eqx.Module):
     hidden_size: int
     cell: eqx.nn.LSTMCell
     dropout: eqx.nn.Dropout
-    dense: eqx.nn.Linear | None = None
+    dense: eqx.nn.Linear | None
 
-    def __init__(self, in_size: int, hidden_size: int, dense_size: int | None,
-                 dropout: float, *, key: PRNGKeyArray):
+    def __init__(self,
+                 in_size: int,
+                 hidden_size: int,
+                 dense_size: int | None,
+                 dropout: float = 0,
+                 *,
+                 key: PRNGKeyArray):
         """Initializes the BaseLSTM model.
 
         Parameters
@@ -59,21 +64,88 @@ class BaseLSTM(eqx.Module):
 
 class LSTM(BaseLSTM):
     """Standard LSTM model built on the BaseLSTM class."""
+    reverse: bool = eqx.field(static=True)
+    return_all: bool = eqx.field(static=True)
 
-    def __init__(self, in_size: int, hidden_size: int, out_size: int, *,
-                 key: PRNGKeyArray, **kwargs):
-        super().__init__(in_size, hidden_size, out_size, key=key, **kwargs)
+    def __init__(self,
+                 in_size: int,
+                 hidden_size: int,
+                 out_size: int | None,
+                 *,
+                 key: PRNGKeyArray,
+                 reverse: bool = False,
+                 return_all: bool = False,
+                 dropout: float = 0):
+        super().__init__(in_size, hidden_size, out_size, dropout, key=key)
+        self.reverse = reverse
+        self.return_all = return_all
 
     def __call__(self, x_d: Array, key: PRNGKeyArray):
 
         def scan_fn(state, xd):
-            return self.cell(xd, state), None
+            return self.cell(xd, state), state[0]
 
         init_state = (jnp.zeros(self.hidden_size), jnp.zeros(self.hidden_size))
-        (out, _), _ = jax.lax.scan(scan_fn, init_state, x_d)
+        (final_state, _), all_states = jax.lax.scan(scan_fn,
+                                                    init_state,
+                                                    x_d,
+                                                    reverse=self.reverse)
 
         if self.dense is not None:
-            out = self.dense(out)
+            if self.return_all:
+                return jax.vmap(self.dense)(all_states)
+            else:
+                return self.dense(final_state)
+        else:
+            if self.return_all:
+                return all_states
+            else:
+                return final_state
+
+
+class BidirectionalLSTM(eqx.Module):
+    """Wraps two LSTM instances (forward and backward) into a bidirectional model."""
+    lstm_fwd: LSTM
+    lstm_bwd: LSTM
+    dense: eqx.nn.Linear | None
+
+    def __init__(self,
+                 in_size: int,
+                 hidden_size: int,
+                 out_size: int | None,
+                 *,
+                 key: PRNGKeyArray,
+                 return_all: bool = False,
+                 dropout: float = 0):
+        keys = jax.random.split(key, 3)
+
+        common_kwargs = {
+            'in_size': in_size,
+            'hidden_size': hidden_size,
+            'out_size': out_size,
+            'dropout': dropout,
+            'return_all': return_all
+        }
+        self.lstm_fwd = LSTM(key=keys[0], **common_kwargs)
+        self.lstm_bwd = LSTM(key=keys[1], reverse=True, **common_kwargs)
+
+        if out_size is not None:
+            self.dense = eqx.nn.Linear(hidden_size * 2, out_size, key=keys[2])
+            if return_all:
+                # vmap to apply over the time dimension
+                self.dense = jax.vmap(self.dense)
+        else:
+            self.dense = None
+
+    def __call__(self, x_d: Array, key: PRNGKeyArray):
+        keys = jax.random.split(key)
+
+        out_fwd = self.lstm_fwd(x_d, keys[0])
+        out_bwd = self.lstm_bwd(x_d, keys[1])
+        out = jnp.concatenate([out_fwd, out_bwd], axis=-1)  # [T, 2H]
+
+        if self.dense is not None:
+            out = jax.vmap(self.dense)(out)
         return out
 
 

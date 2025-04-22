@@ -27,7 +27,8 @@ def mosaic_scatter(cfg: dict, results: pd.DataFrame, metrics: pd.DataFrame, titl
         # Add a 1:1 line over the min and max of x and y
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
-        ax.plot(xlim, ylim, 'r--')
+        lim = [np.concat([xlim, ylim]).min(), np.concat([xlim, ylim]).max()]
+        ax.plot(lim, lim, 'r--')
 
         textstr = '\n'.join([
             f"{key}: {metrics[target][key]:0.2f}"
@@ -44,8 +45,8 @@ def mosaic_scatter(cfg: dict, results: pd.DataFrame, metrics: pd.DataFrame, titl
 
         # Setting axes to be square and equal range
         ax.axis('square')
-        ax.set_xlim(min([xlim, ylim]))
-        ax.set_ylim(max([xlim, ylim]))
+        ax.set_xlim(lim)
+        ax.set_ylim(lim)
         ax.set_title(f"{target} (n {len(x):,})")
         ax.set_xlabel(f'Observed')
         ax.set_ylabel(f'Predicted')

@@ -52,11 +52,11 @@ def train_from_config(cfg: dict, log_dir: Path | None = None):
     dataset : HydroDataset
         The HydroDataset loaded for training.
     """
-    trainer = None
     dataset = HydroDataset(cfg)
     cfg = set_model_data_args(cfg, dataset)
     dataloader = HydroDataLoader(cfg, dataset)
 
+    trainer = None
     if log_dir and log_dir.is_dir():
         trainer = Trainer.load_last_checkpoint(log_dir)
         # Could fail to load if nothing was saved.
@@ -64,11 +64,6 @@ def train_from_config(cfg: dict, log_dir: Path | None = None):
             trainer.dataloader = dataloader
     if trainer is None:
         trainer = Trainer(cfg, dataloader, log_dir=log_dir)
-
-    # trainer = Trainer(cfg, dataloader, **trainer_kwargs)
-
-    # if model_finetune_kwargs:
-    #     trainer.model.finetune_update(**model_finetune_kwargs)
 
     trainer.start_training()
     cleanup_dl(dataloader)
@@ -107,48 +102,63 @@ def train_ensemble(config_yml: Path, ensemble_seed: int):
     return cfg, trainer.model, trainer.log_dir, dataset
 
 
-# def finetune(finetune_yml: Path):
-#     """Fine-tunes a pre-trained model using a separate configuration file.
+def finetune(finetune_yml: Path):
+    """Fine-tunes a pre-trained model using a separate configuration file.
 
-#     Parameters
-#     ----------
-#     finetune_yml : Path
-#         Path to the YAML file containing fine-tuning parameters. This file should be in
-#         the same directory as the original model run. It contains minimal parameters,
-#         only those that are updated.
+    Parameters
+    ----------
+    finetune_yml : Path
+        Path to the YAML file containing fine-tuning parameters. This file should be in
+        the same directory as the original model run. It contains minimal parameters,
+        only those that are updated.
 
-#     Returns
-#     -------
-#     cfg : dict
-#         The updated configuration dictionary.
-#     model : eqx.Module
-#         The fine-tuned model.
-#     log_dir : Path
-#         The directory where training logs and checkpoints were saved.
-#     dataset : HydroDataset
-#         The HydroDataset loaded for training.
-#     """
-#     # Load the config and manipulate it a bit
-#     run_dir = finetune_yml.parent
-#     trainer = Trainer.load_last_checkpoint(run_dir)
-#     cfg = trainer.cfg.copy()
+    Returns
+    -------
+    cfg : dict
+        The updated configuration dictionary.
+    model : eqx.Module
+        The fine-tuned model.
+    log_dir : Path
+        The directory where training logs and checkpoints were saved.
+    dataset : HydroDataset
+        The HydroDataset loaded for training.
+    """
+    # Load the config and manipulate it a bit
+    run_dir = finetune_yml.parent
+    cfg, log_dir, checkpoint = Trainer.load_last_checkpoint(run_dir, lazy=True)
 
-#     # Read in the finetuning parameters
-#     finetune = read_yml(finetune_yml)
-#     cfg['num_epochs'] = trainer.epoch + finetune.get('additional_epochs', 0)
-#     cfg['transition_begin'] = trainer.epoch if finetune.get('reset_lr') else 0
-#     cfg['cfg_path'] = finetune_yml
+    # Read in the finetuning parameters
+    finetune = read_yml(finetune_yml)
 
-#     # Insert these params directly.
-#     cfg.update(finetune.get('config_update', {}))
+    add_epochs = finetune.get('additional_epochs')
+    tot_epochs = finetune.get('total_epochs')
+    if add_epochs and tot_epochs:
+        raise ValueError("Cannot specify both 'additional_epochs' and 'total_epochs'.")
+    elif add_epochs:
+        cfg['num_epochs'] = checkpoint['epoch'] + add_epochs
+    elif tot_epochs:
+        cfg['num_epochs'] = tot_epochs
 
-#     trainer_kwargs = {'continue_from': run_dir}
+    cfg['transition_begin'] = checkpoint['epoch'] if finetune.get('reset_lr') else 0
+    cfg['cfg_path'] = finetune_yml
 
-#     model_finetune_kwargs = finetune.get('model_update', None)
-#     cfg, trainer, dataset = train_from_config(cfg, trainer_kwargs,
-#                                               model_finetune_kwargs)
+    if finetune.get('rm_early_stopper'):
+        checkpoint['early_stopper'] = None
 
-#     return cfg, trainer.model, trainer.log_dir, dataset
+    # Insert these params directly.
+    cfg.update(finetune.get('config_update', {}))
+
+    if finetune.get('model_update'):
+        checkpoint['model'].finetune_update(**finetune.get('model_update'))
+
+    dataset = HydroDataset(cfg)
+    dataloader = HydroDataLoader(cfg, dataset)
+    trainer = Trainer(cfg, dataloader, log_dir=log_dir, checkpoint=checkpoint)
+
+    trainer.start_training()
+    cleanup_dl(trainer.dataloader)
+
+    return cfg, trainer.model, trainer.log_dir, dataset
 
 
 def hyperparam_grid_search(config_yml: Path, idx: int):
@@ -250,11 +260,21 @@ def hyperparam_smac_optimize(config_yml: Path, n_workers: int, n_runs: int):
     manual_smac_optimize(cfg, n_workers, n_runs, target_fun)
 
 
+def load_test_model(run_dir: Path):
+    if (run_dir / 'model_and_opt.eqx').is_file():
+        trainer = Trainer.load_checkpoint(run_dir)
+    else:
+        trainer = Trainer.load_last_checkpoint(run_dir)
+    dataset = HydroDataset(trainer.cfg)
+
+    return trainer.cfg, trainer.model, trainer.log_dir, dataset
+
+
 def calc_attributions(run_dir: Path):
     trainer = Trainer.load_last_checkpoint(run_dir)
     cfg = trainer.cfg
     cfg['batch_size'] = cfg['batch_size'] // 10
-    cfg['data_subset'] = 'test'
+    cfg['data_subset'] = 'predict'
 
     dataset = HydroDataset(cfg)
     cfg = set_model_data_args(cfg, dataset)
@@ -459,9 +479,9 @@ def main(args: ArgumentParser):
     elif args.train_ensemble:
         config_yml = Path(args.train_ensemble).resolve()
         cfg, model, eval_dir, dataset = train_ensemble(config_yml, args.ensemble_seed)
-    # elif args.finetune:
-    #     finetune_yml = Path(args.finetune).resolve()
-    #     cfg, model, eval_dir, dataset = finetune(finetune_yml)
+    elif args.finetune:
+        finetune_yml = Path(args.finetune).resolve()
+        cfg, model, eval_dir, dataset = finetune(finetune_yml)
     elif args.grid_search:
         config_yml = Path(args.grid_search).resolve()
         hyperparam_grid_search(config_yml, args.grid_index)
@@ -472,11 +492,7 @@ def main(args: ArgumentParser):
         return
     elif args.test:
         run_dir = args.test.resolve()
-        trainer = Trainer.load_last_checkpoint(run_dir)
-        cfg = trainer.cfg
-        model = trainer.model
-        dataset = HydroDataset(cfg)
-        eval_dir = run_dir
+        cfg, model, eval_dir, dataset = load_test_model(run_dir)
     elif args.attribution:
         run_dir = args.attribution.resolve()
         calc_attributions(run_dir)
