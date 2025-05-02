@@ -234,6 +234,9 @@ class Trainer:
             self.losses.append(float(loss))
             self.logger.info(f"Epoch: {self.epoch}, Loss: {loss:.4f}")
 
+            if (self.epoch % self.log_interval == 0):
+                self.save_state()
+
             # Log the counts of any bad gradients.
             for type_key, tree_counts in bad_grads.items():
                 if tree_counts:
@@ -254,9 +257,6 @@ class Trainer:
                     self.cfg['num_epochs'] = self.epoch
                     self.save_state()
                     break  # exit training loop
-
-            if (self.epoch % self.log_interval == 0):
-                self.save_state()
 
         if (self.epoch % self.log_interval != 0):
             self.save_state()

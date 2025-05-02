@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=chunked_inference
-#SBATCH --output=/work/pi_kandread_umass_edu/tss-ml/runs/CONUS/_slurm_outputs/inference_chunks_%A_%a.out
-#SBATCH --array=0-15
+#SBATCH --job-name=chunked_integrated_gradients
+#SBATCH --output=/work/pi_kandread_umass_edu/tss-ml/runs/CONUS/_slurm_outputs/attribution_chunks_%A_%a.out
+#SBATCH --array=0-63
 #SBATCH -t 1-00:00:00
 #SBATCH -p gpupod-l40s
 #SBATCH -q gpu-quota-16
@@ -19,4 +19,4 @@ SCRIPT_PATH="/work/pi_kandread_umass_edu/tss-ml/src/run.py"
 MODEL_PATH="/work/pi_kandread_umass_edu/tss-ml/runs/CONUS/train_all_sites_20250428_200346"
 
 # Run the Python script with the current array task ID as the grid search index
-python $SCRIPT_PATH --chunked_inference $MODEL_PATH --chunk_index $SLURM_ARRAY_TASK_ID --n_chunks 16
+python $SCRIPT_PATH --chunked_attribution $MODEL_PATH --chunk_index $SLURM_ARRAY_TASK_ID --n_chunks 64

@@ -64,7 +64,10 @@ class STACKED_LSTM(eqx.Module):
 
     def __call__(self, data: dict[str, Array | dict[str, Array]], key: PRNGKeyArray):
         keys = jax.random.split(key, 2)
-        x = jax.vmap(self.in_proj)(data['dynamic']['era5'])
+
+        # Replace NaN values with 0s in the dynamic data
+        x_d = jnp.nan_to_num(data['dynamic']['era5'], nan=0.0)
+        x = jax.vmap(self.in_proj)(x_d)
 
         if self.static_proj:
             x_s = self.static_proj(data['static'])

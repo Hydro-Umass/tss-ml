@@ -693,11 +693,6 @@ class IEALSTM(BaseLSTM):
             _x_d, _dt = data
             decay_weight = decay_fn(_dt)
 
-            # if _dt > 0:
-            #     new_state = self.cell(state, _x_d, i, decay_weight)
-            # else:
-            #     new_state = state
-
             new_state = jax.lax.cond(pred=_dt > 0,
                                      true_fun=self.cell,
                                      false_fun=lambda _: state,

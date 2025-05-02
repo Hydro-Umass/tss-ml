@@ -273,7 +273,7 @@ def load_test_model(run_dir: Path):
 def calc_attributions(run_dir: Path):
     trainer = Trainer.load_last_checkpoint(run_dir)
     cfg = trainer.cfg
-    cfg['batch_size'] = cfg['batch_size'] // 10
+    # cfg['batch_size'] = cfg['batch_size'] // 10
     cfg['data_subset'] = 'predict'
 
     dataset = HydroDataset(cfg)
@@ -281,13 +281,14 @@ def calc_attributions(run_dir: Path):
     dataloader = HydroDataLoader(cfg, dataset)
 
     save_dir = run_dir / 'figures' / 'attribution'
+
     save_dir.mkdir(parents=True, exist_ok=True)
 
     save_all_intgrads(cfg, trainer.model, dataloader, save_dir, m_steps=10)
     plot_average_attribution(save_dir, dataset)
 
 
-def load_prediction_model(run_dir: Path, chunk_idx: int | None = None):
+def load_chunked_model(run_dir: Path, chunk_idx: int, n_chunks: int):
     """Loads a pre-trained model and chunk of the dataset into memory.
 
     Parameters
@@ -296,6 +297,8 @@ def load_prediction_model(run_dir: Path, chunk_idx: int | None = None):
         Path to the model training directory.
     chunk_idx : int
         Index of the basin chunking to select and predict on.
+    n_chunks : int
+        Total number of chunks to divide the sites into.
 
     Returns
     -------
@@ -308,15 +311,19 @@ def load_prediction_model(run_dir: Path, chunk_idx: int | None = None):
     eval_dir : Path
         A directory for saving the results of this subset.
     """
-    # cfg, model, _ = load_model(run_dir)
     trainer = Trainer.load_last_checkpoint(run_dir)
     cfg = trainer.cfg
-
     train_dataset = HydroDataset(cfg)
+
     cfg['data_subset'] = 'predict'
     cfg['shuffle'] = False  # No need to shuffle for inference
-    if chunk_idx:
-        cfg['basin_file'] = f'metadata/site_lists/predictions/chunk_{chunk_idx:02}.txt'
+    cfg['chunk_idx'] = chunk_idx
+    cfg['n_chunks'] = n_chunks
+
+    # Hackish
+    cfg['basin_file'] = "metadata/site_lists/all_sites.txt"
+    cfg.pop('train_basin_file', None)
+    cfg.pop('test_basin_file', None)
 
     predict_dataset = HydroDataset(cfg, train_ds=train_dataset, use_cache=False)
 
@@ -324,6 +331,18 @@ def load_prediction_model(run_dir: Path, chunk_idx: int | None = None):
     eval_dir.mkdir(parents=True, exist_ok=True)
 
     return cfg, trainer.model, predict_dataset, eval_dir
+
+
+def calc_chunked_attributions(run_dir: Path, chunk_idx: int, n_chunks: int):
+    cfg, model, dataset, _ = load_chunked_model(run_dir, chunk_idx, n_chunks)
+
+    cfg['batch_size'] = cfg['batch_size'] // 10  # Integral requires lots of vram.
+    cfg = set_model_data_args(cfg, dataset)
+    dataloader = HydroDataLoader(cfg, dataset)
+
+    save_dir = run_dir / 'figures' / 'attribution' / f'chunk_{chunk_idx:02d}_of_{n_chunks:02d}'
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_all_intgrads(cfg, model, dataloader, save_dir, m_steps=10)
 
 
 def make_all_plots(cfg: dict, results: pd.DataFrame, bulk_metrics: dict,
@@ -455,7 +474,7 @@ def main(args: ArgumentParser):
         - **finetune**: Path to the fine-tuning configuration file.
         - **grid_search**: Path to the grid search configuration file.
         - **test**: Path to the directory containing the model to test.
-        - **prediction_model**: Path to the directory containing the model to use for predictions.
+        - **chunked_inference**: Path to the directory containing the model to use for predictions.
         - **ensemble_seed**: Integer seed to be added to the model seed (required for ensemble training).
         - **grid_index**: Index of the hyperparameter grid to evaluate (required for grid search).
         - **basin_chunk_index**: Index of the chunked basin list to predict on (required for prediction).
@@ -491,18 +510,22 @@ def main(args: ArgumentParser):
         hyperparam_smac_optimize(config_yml, args.smac_workers, args.smac_runs)
         return
     elif args.test:
-        run_dir = args.test.resolve()
+        run_dir = Path(args.test).resolve()
         cfg, model, eval_dir, dataset = load_test_model(run_dir)
     elif args.attribution:
-        run_dir = args.attribution.resolve()
+        run_dir = Path(args.attribution).resolve()
         calc_attributions(run_dir)
         return
-    elif args.prediction_model:
+    elif args.chunked_inference:
         run_test = run_train = False
-        run_predict = f'chunk_{args.basin_chunk_index:02}'
-        run_dir = Path(args.prediction_model).resolve()
-        cfg, model, dataset, eval_dir = load_prediction_model(
-            run_dir, args.basin_chunk_index)
+        run_predict = f'chunk_{args.chunk_index:02}_of_{args.n_chunks:02}.pkl'
+        run_dir = Path(args.chunked_inference).resolve()
+        cfg, model, dataset, eval_dir = load_chunked_model(run_dir, args.chunk_index,
+                                                           args.n_chunks)
+    elif args.chunked_attribution:
+        run_dir = Path(args.chunked_attribution).resolve()
+        calc_chunked_attributions(run_dir, args.chunk_index, args.n_chunks)
+        return
 
     eval_model(cfg, model, dataset, eval_dir, run_test, run_predict, run_train)
 
@@ -538,13 +561,15 @@ if __name__ == '__main__':
     group.add_argument('--test',
                        type=Path,
                        help='Path to directory with model to test.')
-    group.add_argument(
-        '--attribution',
-        type=Path,
-        help='Path to directory with model to use for feature attributions.')
-    group.add_argument('--prediction_model',
+    group.add_argument('--attribution',
                        type=Path,
-                       help='Path to directory with model to use for predictions.')
+                       help='Path to directory with model for feature attribution.')
+    group.add_argument('--chunked_inference',
+                       type=Path,
+                       help='Path to directory with model for predictions.')
+    group.add_argument('--chunked_attribution',
+                       type=Path,
+                       help='Path to directory with model for attributions.')
 
     parser.add_argument(
         '--ensemble_seed',
@@ -571,11 +596,19 @@ if __name__ == '__main__':
         required='--smac_optimize' in sys.argv)
 
     parser.add_argument(
-        '--basin_chunk_index',
-        type=positive_int,
+        '--chunk_index',
+        type=int,
         help=
-        'Index of the chunked basin list to predict on. Must have a matching basin file.',
-        required='--prediction_model' in sys.argv)
+        'Index of the chunked basin list to predict. (required with --chunked_inference or --chunked_attribution)',
+        required='--chunked_inference' in sys.argv or
+        '--chunked_attribution' in sys.argv)
+    parser.add_argument(
+        '--n_chunks',
+        type=int,
+        help=
+        'Total number of chunks to divide the sites into. (required with --chunked_inference or --chunked_attribution)',
+        required='--chunked_inference' in sys.argv or
+        '--chunked_attribution' in sys.argv)
 
     args = parser.parse_args()
 

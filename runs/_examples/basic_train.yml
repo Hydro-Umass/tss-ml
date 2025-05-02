@@ -116,6 +116,15 @@ clip_feature_range:
     flux: [1, null]
     usgs_q: [1, null]
 
+value_filters:
+    - column: 'sat
+      operation: "equals" # Can also use 'greater_than', and 'less_than'
+      value: 8
+      feature_group: 'landsat'
+      # optionally, define a list of features to apply the filter to
+      # feature_list: ['Blue', 'Green', 'Red', 'Nir'] 
+      # If not defined, all features in the group are filtered.
+
 # ┌────────────────────────────────┐ #
 # │           DataLoader           │ #
 # └────────────────────────────────┘ #
