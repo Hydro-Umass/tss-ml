@@ -51,13 +51,18 @@ def model_iterate(model: eqx.Module,
         batch = dataloader.shard_batch(batch)
         y_pred = _model_map(model, batch, keys)
 
+        # Select the end of the time dimension for stacking samples.
+        y_pred = y_pred[:, -1, ...] if dataloader.dataset.seq2seq else y_pred
+
         if denormalize:
             y_pred = dataloader.dataset.denormalize_target(y_pred)
 
         out_dict = {'basin': basin, 'date': date, 'y_pred': y_pred}
 
         if not inference_mode:
-            y = batch['y'][:, -1, :]
+            # Select the end of the time dimension for stacking samples.
+            y = batch['y'][:, -1, ...] if dataloader.dataset.seq2seq else batch['y']
+
             if denormalize:
                 y = dataloader.dataset.denormalize_target(y)
             out_dict['y'] = y

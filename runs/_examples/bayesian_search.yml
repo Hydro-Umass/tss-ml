@@ -1,4 +1,18 @@
 # ┌────────────────────────────────┐ #
+# │          Search Space          │ #
+# └────────────────────────────────┘ #
+# The full range of each hyperparameter to search. All parameters referenced by
+# their final key name (i.e. ignoring nested dictionary keys). Each parameter
+# also needs to identify if it is integer or float values. See the
+# implementation in train.bayesian_search.py. 
+param_search_dict:
+    sequence_length: 
+        int: [7, 365]
+    hidden_size:
+        int: [16, 96]
+
+
+# ┌────────────────────────────────┐ #
 # │             DATA               │ #
 # └────────────────────────────────┘ #
 # data_dir needs to at least have the following structure:
@@ -116,15 +130,6 @@ clip_feature_range:
     flux: [1, null]
     usgs_q: [1, null]
 
-value_filters:
-    - column: 'sat
-      operation: "equals" # Can also use 'greater_than', and 'less_than'
-      value: 8
-      feature_group: 'landsat'
-      # optionally, define a list of features to apply the filter to
-      # feature_list: ['Blue', 'Green', 'Red', 'Nir'] 
-      # If not defined, all features in the group are filtered.
-
 # ┌────────────────────────────────┐ #
 # │           DataLoader           │ #
 # └────────────────────────────────┘ #
@@ -153,7 +158,6 @@ drop_last: true
 # ┌────────────────────────────────┐ #
 # │             Model              │ #
 # └────────────────────────────────┘ #
-# See list of valid models in models/__init__.py
 model: "lstm_mlp_attn"
 
 sequence_length: 365

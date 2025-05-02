@@ -30,6 +30,7 @@ class HydroDataset(Dataset):
 
         self.features = self.cfg['features']
         self.target = self.features['target']
+        self.seq2seq = self.cfg.get('seq2seq', False)
 
         self._read_basin_files()
         self.x_s = self._load_attributes()
@@ -44,6 +45,34 @@ class HydroDataset(Dataset):
         Returns the number of valid sequences in the dataset.
         """
         return len(self.sequence_indices)
+
+    def _chunk_basins(self, chunk_idx, n_chunks):
+        """
+        Handles the logic for splitting basins into chunks and setting the dataset to 'predict' mode.
+        """
+        # Ensure 'predict' mode is set when chunking is configured
+        if self.cfg.get('data_subset') != 'predict':
+            raise ValueError(
+                "Chunking configuration is only allowed when 'data_subset' is set to 'predict'. "
+                "Please update the configuration to use 'predict' mode.")
+
+        if not (0 <= chunk_idx < n_chunks):
+            raise ValueError(
+                f"chunk_idx ({chunk_idx}) must be between 0 and n_chunks ({n_chunks}) - 1."
+            )
+
+        # Split basins into chunks
+        chunk_size = len(self.all_basins) // n_chunks
+        remainder = len(self.all_basins) % n_chunks
+
+        # Calculate start and end indices for the chunk
+        start_idx = chunk_idx * chunk_size + min(chunk_idx, remainder)
+        end_idx = start_idx + chunk_size + (1 if chunk_idx < remainder else 0)
+
+        # Select the basins for this chunk
+        self.all_basins = self.all_basins[start_idx:end_idx]
+        self.train_basins = self.test_basins = self.all_basins
+        print(f"Chunked basin list includes: {len(self.all_basins)}")
 
     def _read_basin_files(self):
         # for convenience and readability
@@ -63,7 +92,7 @@ class HydroDataset(Dataset):
         if basin_file:
             self.all_basins = read_file(data_dir / basin_file)
             self.train_basins = self.test_basins = self.all_basins
-        # Seperate files for train and test
+        # Separate files for train and test
         elif train_basin_file and test_basin_file:
             self.train_basins = read_file(data_dir / train_basin_file)
             self.test_basins = read_file(data_dir / test_basin_file)
@@ -73,13 +102,18 @@ class HydroDataset(Dataset):
                 'Must set either "basin_file" or "train_basin_file" AND "test_basin_file"'
             )
 
+        chunk_idx = self.cfg.get('chunk_idx')
+        n_chunks = self.cfg.get('n_chunks')
+        if chunk_idx and n_chunks:
+            self._chunk_basins(chunk_idx, n_chunks)
+
         if graph_network_file:
             self.graph_mode = True
             if self.train_basins == self.test_basins:
                 self.graph_matrix = np.loadtxt(data_dir / graph_network_file)
                 if self.graph_matrix.shape[0] != len(self.train_basins):
                     raise ValueError(
-                        'Graph network matrix shape be square of number of training basins.\n'
+                        'Graph network matrix shape must be square of number of training basins.\n'
                         + f'Graph network matrix shape: {self.graph_matrix.shape}\n' +
                         f'Number of training basins: {len(self.train_basins)}.')
                 if self.graph_matrix.shape[0] != self.graph_matrix.shape[1]:
@@ -123,6 +157,48 @@ class HydroDataset(Dataset):
 
         return x_d
 
+    def _apply_filters(self, ds):
+        """
+        Apply filters specified in the configuration to the dataset.
+        """
+        filters = self.cfg.get('value_filters', [])
+
+        for filter_spec in filters:
+            column = filter_spec['column']
+            operation = filter_spec['operation']
+            value = filter_spec['value']
+
+            if filter_spec.get('feature_list'):
+                col_list = filter_spec['feature_list']
+            elif filter_spec.get('feature_group'):
+                col_list = self.features['dynamic'][filter_spec['feature_group']]
+            else:
+                col_list = ds.data_vars
+
+            if column not in ds.data_vars:
+                raise RuntimeError(
+                    f"Column '{column}' not found in dataset. This column is required for filtering."
+                )
+
+            missing_cols = [col for col in col_list if col not in ds.data_vars]
+            if missing_cols:
+                warnings.warn(
+                    f"{missing_cols} specified by the filter are missing from the dataset. Skipping these columns."
+                )
+
+            # Operations are inverted here to match ds.where args.
+            if operation == 'less_than':
+                mask = ds[column] > value
+            elif operation == 'greater_than':
+                mask = ds[column] < value
+            elif operation == 'equals':
+                mask = ds[column] != value
+            else:
+                raise ValueError(f"Unsupported operation '{operation}' in filter spec.")
+            ds[col_list] = ds[col_list].where(mask, np.nan)
+
+        return ds
+
     def _load_basin_data(self):
         """
         Loads the basin data from NetCDF files and applies the time slice.
@@ -130,8 +206,7 @@ class HydroDataset(Dataset):
         Returns:
             xr.Dataset: An xarray dataset of time series data with time and basin coordinates.
         """
-        ts_dir = self.cfg.get('time_series_dir')
-        ts_dir = 'time_series' if ts_dir is None else ts_dir
+        ts_dir = self.cfg.get('time_series_dir', 'time_series')
 
         ds_list = []
         for basin in tqdm(self.all_basins,
@@ -141,8 +216,9 @@ class HydroDataset(Dataset):
             ds = xr.open_dataset(file_path).sel(date=self.cfg['time_slice'])
             ds['date'] = ds['date'].astype('datetime64[ns]')
 
-            # Filter to keep only the necessary features and the target variable if not in inference mode
+            # Filter to keep only the necessary features
             features_to_keep = list(itertools.chain(*self.features['dynamic'].values()))
+            # Add the target variable if not in inference mode
             if not self.inference_mode:
                 features_to_keep.extend(self.target)
 
@@ -152,6 +228,10 @@ class HydroDataset(Dataset):
                     f"The following columns are missing from the dataset: {missing_columns}"
                     f"The following variables are available in the dataset: {ds.data_vars}"
                 )
+
+            # Apply filters to the dataset before dropping any columns (we may need for filtering).
+            ds = self._apply_filters(ds)
+
             ds = ds[features_to_keep]
 
             # Clip selected columns to the specified range. This range is preprocessed in config.py.
@@ -313,6 +393,16 @@ class HydroDataset(Dataset):
             # Target data. Shape (batch, sequence, features)
             if not self.inference_mode:
                 batch['y'] = np.moveaxis(ds[self.target].to_array().values, 0, 2)
+
+        if not self.seq2seq:
+            batch['y'] = batch['y'][:, -1, ...]
+
+        # # Testing devices
+        # for source, col_names in self.features['dynamic'].items():
+        #     batch['dynamic'][source] = jnp.array(batch['dynamic'][source])
+        #     batch['dynamic_dt'][source] = jnp.array(batch['dynamic_dt'][source])
+        # batch['static'] = jnp.array(batch['static'])
+        # batch['y'] = jnp.array(batch['y'])
 
         return basins, dates, batch
 
@@ -512,6 +602,26 @@ class HydroDataset(Dataset):
 
         return ds, scale
 
+    def denormalize(self, x: np.ndarray | jnp.ndarray, name: str):
+        """
+        Denormalizes a feature or target by its name.
+        
+        Args:
+            x (np.ndarray or jnp.ndarray): Normalized data.
+            name (str): Name of the variable to denormalize.
+        
+        Returns:
+            np.ndarray or jnp.ndarray: Denormalized data.
+        """
+        offset = self.d_scale[name]['offset']
+        scale = self.d_scale[name]['scale']
+        log_norm = self.d_scale[name]['log_norm']
+
+        if log_norm:
+            return jnp.exp(x + offset) - self.log_pad
+        else:
+            return x * scale + offset
+
     def denormalize_target(self, y_normalized):
         """
         Denormalizes the target variable(s).
@@ -521,18 +631,10 @@ class HydroDataset(Dataset):
         y = jnp.empty_like(y_normalized)
 
         for i in range(len(self.target)):
-            # Retrieve the normalization parameters for the target variable
-            target = self.target[i]
-            offset = self.d_scale[target]['offset']
-            scale = self.d_scale[target]['scale']
-            log_norm = self.d_scale[target]['log_norm']
+            target_name = self.target[i]
+            denorm = self.denormalize(y_normalized[..., i], name=target_name)
+            y = y.at[..., i].set(denorm)
 
-            # Reverse the normalization process using .at and .set
-            if log_norm:
-                y = y.at[...,
-                         i].set(jnp.exp(y_normalized[..., i] + offset) - self.log_pad)
-            else:
-                y = y.at[..., i].set(y_normalized[..., i] * scale + offset)
         return y
 
     def _date_batching(self, valid_date_mask):
@@ -664,7 +766,7 @@ class HydroDataset(Dataset):
         cfg_keys = [
             'data_dir', "time_series_dir", 'features', 'time_slice', 'split_time',
             'add_rolling_means', 'log_norm_cols', 'categorical_cols', 'bitmask_cols',
-            'range_norm_cols', 'clip_feature_range'
+            'range_norm_cols', 'clip_feature_range', 'value_filters'
         ]
         data_config = {k: self.cfg.get(k) for k in cfg_keys}
         data_config['basins'] = sorted(self.all_basins)

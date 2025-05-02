@@ -4,6 +4,9 @@ import equinox as eqx
 
 from models.flexible_hybrid import FlexibleHybrid
 from models.lstm_mlp_attn import LSTM_MLP_ATTN
+from models.lstm_mlp_attn_simple import LSTM_MLP_ATTN_SIMPLE
+from models.attn_lstm import ATTN_LSTM
+from models.stacked_lstm import STACKED_LSTM
 from models.rg_lstm import Graph_LSTM
 
 
@@ -25,6 +28,12 @@ def make(cfg: dict):
         model_fn = FlexibleHybrid
     elif name == "lstm_mlp_attn":
         model_fn = LSTM_MLP_ATTN
+    elif name == "lstm_mlp_attn_simple":
+        model_fn = LSTM_MLP_ATTN_SIMPLE
+    elif name == 'attn_lstm':
+        model_fn = ATTN_LSTM
+    elif name == 'stacked_lstm':
+        model_fn = STACKED_LSTM
     elif name == 'graph_lstm':
         model_fn = Graph_LSTM
     else:

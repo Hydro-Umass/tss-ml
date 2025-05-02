@@ -1,6 +1,6 @@
 jax
 equinox
-pytorch::pytorch
+torch
 scikit-learn
 notebook
 optax
